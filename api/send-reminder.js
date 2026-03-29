@@ -1,5 +1,6 @@
 // /api/send-reminder.js
 // Vercel Cron hits this endpoint → Resend sends email → Verizon gateway delivers as SMS
+// Add ?force=true to skip the hour check for testing
 
 const SEND_HOURS = [8, 11, 14, 17, 20]; // 8am, 11am, 2pm, 5pm, 8pm ET
 
@@ -22,21 +23,18 @@ const MESSAGES = [
 ];
 
 export default async function handler(req) {
-  // Verify this is a legit cron call (Vercel sets this header)
-  if (req.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
-    // Allow manual calls without secret for testing, but log it
-    console.log("No cron secret — manual trigger or test");
-  }
+  const url = new URL(req.url);
+  const forceMode = url.searchParams.get("force") === "true";
 
-  // Check if it's a valid send hour in Eastern Time
+  // Check if it's a valid send hour in Eastern Time (skip if force mode)
   const now = new Date();
   const etHour = parseInt(
     now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false })
   );
 
-  if (!SEND_HOURS.includes(etHour)) {
+  if (!forceMode && !SEND_HOURS.includes(etHour)) {
     return new Response(
-      JSON.stringify({ skipped: true, etHour, reason: "Not a send hour" }),
+      JSON.stringify({ skipped: true, etHour, reason: "Not a send hour. Add ?force=true to override." }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
   }
@@ -79,7 +77,7 @@ export default async function handler(req) {
   console.log(`Sent to Jaimie at ${etTime} ET: ${message}`);
 
   return new Response(
-    JSON.stringify({ sent: true, time: `${etTime} ET`, message, resendId: result.id }),
+    JSON.stringify({ sent: true, time: `${etTime} ET`, message, resendId: result.id, forced: forceMode }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }
