@@ -1,6 +1,8 @@
 // /api/send-reminder.js
-// Vercel Cron hits this endpoint → Resend sends email → Verizon gateway delivers as SMS
+// Vercel Cron hits this → Gmail SMTP sends email → Verizon gateway delivers as SMS
 // Add ?force=true to skip the hour check for testing
+
+const nodemailer = require("nodemailer");
 
 const SEND_HOURS = [8, 11, 14, 17, 20]; // 8am, 11am, 2pm, 5pm, 8pm ET
 
@@ -22,66 +24,64 @@ const MESSAGES = [
   "Your future self says THANK YOU for drinking water right now!",
 ];
 
-export default async function handler(req) {
-  const url = new URL(req.url);
-  const forceMode = url.searchParams.get("force") === "true";
+module.exports = async function handler(req, res) {
+  const forceMode = req.query.force === "true";
 
-  // Check if it's a valid send hour in Eastern Time (skip if force mode)
+  // Check if it's a valid send hour in Eastern Time
   const now = new Date();
   const etHour = parseInt(
     now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false })
   );
 
   if (!forceMode && !SEND_HOURS.includes(etHour)) {
-    return new Response(
-      JSON.stringify({ skipped: true, etHour, reason: "Not a send hour. Add ?force=true to override." }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    );
+    return res.status(200).json({
+      skipped: true,
+      etHour,
+      reason: "Not a send hour. Add ?force=true to override.",
+    });
   }
 
   // Pick a random message
   const message = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
 
-  // Send via Resend
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.RESEND_API}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: process.env.FROM_EMAIL,
-      to: [process.env.SMS_GATEWAY_EMAIL],
+  try {
+    // Create Gmail SMTP transport
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.GMAIL_ADDRESS,
+        pass: process.env.GMAIL_APP_PASSWORD,
+      },
+    });
+
+    // Send to Verizon SMS gateway
+    await transporter.sendMail({
+      from: process.env.GMAIL_ADDRESS,
+      to: process.env.SMS_GATEWAY_EMAIL,
       subject: "",
       text: message,
-    }),
-  });
+    });
 
-  const result = await res.json();
+    const etTime = now.toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
 
-  if (!res.ok) {
-    console.error("Resend error:", result);
-    return new Response(
-      JSON.stringify({ error: true, details: result }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+    console.log(`Sent to Jaimie at ${etTime} ET: ${message}`);
+
+    return res.status(200).json({
+      sent: true,
+      time: `${etTime} ET`,
+      message,
+      forced: forceMode,
+    });
+  } catch (err) {
+    console.error("SMTP error:", err);
+    return res.status(500).json({
+      error: true,
+      details: err.message,
+    });
   }
-
-  const etTime = now.toLocaleString("en-US", {
-    timeZone: "America/New_York",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`Sent to Jaimie at ${etTime} ET: ${message}`);
-
-  return new Response(
-    JSON.stringify({ sent: true, time: `${etTime} ET`, message, resendId: result.id, forced: forceMode }),
-    { status: 200, headers: { "Content-Type": "application/json" } }
-  );
-}
-
-export const config = {
-  runtime: "edge",
 };
